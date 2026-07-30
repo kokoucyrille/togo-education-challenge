@@ -42,35 +42,6 @@ with tabs[0]:
     st.info("Valeur ajoutée distinctive de ce tableau de bord : au-delà des statistiques descriptives, la "
             "théorie des graphes révèle la structure relationnelle du système éducatif togolais.")
 
-    with st.expander("📖 Glossaire — définitions des termes clés de théorie des graphes"):
-        st.caption("Notions mobilisées dans cet onglet pour analyser la structure relationnelle du système "
-                   "éducatif (nœuds = régions, préfectures, établissements... ; arêtes = relations entre eux).")
-        glossaire_graphes = pd.DataFrame([
-            ("Nœud (vertex)", "Élément de base d'un graphe : ici une région, une préfecture, un établissement, "
-             "une catégorie de formation ou un secteur d'activité."),
-            ("Arête (edge)", "Lien entre deux nœuds, par exemple la relation « tel établissement se trouve dans "
-             "telle préfecture » ou « telle région propose telle catégorie de formation »."),
-            ("Graphe biparti", "Graphe dont les nœuds se répartissent en deux groupes distincts (ex. Régions "
-             "d'un côté, Catégories de formation de l'autre), les arêtes ne reliant que des nœuds de groupes différents."),
-            ("Poids d'une arête", "Valeur numérique associée à un lien (ex. nombre d'établissements) qui en "
-             "indique l'intensité ou l'importance relative."),
-            ("Centralité de degré", "Mesure le nombre de connexions directes d'un nœud : une région reliée à "
-             "beaucoup de catégories de formation a une forte centralité de degré."),
-            ("Centralité d'intermédiarité (betweenness)", "Mesure à quel point un nœud sert de « pont » sur les "
-             "chemins les plus courts entre les autres nœuds du graphe."),
-            ("Centralité de proximité (closeness)", "Mesure la rapidité avec laquelle un nœud peut atteindre "
-             "tous les autres nœuds du graphe (plus la distance moyenne est faible, plus la centralité est élevée)."),
-            ("Centralité de vecteur propre (eigenvector)", "Mesure l'importance d'un nœud en tenant compte de "
-             "l'importance de ses voisins : être connecté à des nœuds eux-mêmes influents augmente ce score."),
-            ("PageRank", "Algorithme (popularisé par Google) qui attribue un score d'importance à chaque nœud "
-             "selon la quantité et la qualité des liens qui pointent vers lui."),
-            ("Communauté / Algorithme de Louvain", "Regroupement de nœuds plus densément connectés entre eux "
-             "qu'avec le reste du graphe ; l'algorithme de Louvain détecte automatiquement ces sous-groupes."),
-            ("Graphe hiérarchique", "Graphe organisé par niveaux (ex. Togo → Région → Préfecture → Établissement), "
-             "où chaque niveau est rattaché au niveau supérieur."),
-        ], columns=["Terme", "Définition / signification"])
-        st.dataframe(glossaire_graphes, width='stretch', hide_index=True)
-
     st.markdown("#### Carte nationale des priorités d'investissement")
     impact_urgence = compute_impact_urgence(df_filtered)
     m2 = build_map_priorities(df_filtered, impact_urgence)
