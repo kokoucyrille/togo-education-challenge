@@ -1,0 +1,340 @@
+"""
+pages/4_Analyses_Recommandations.py
+=====================================
+Cœur analytique du tableau de bord : théorie des graphes, Indice d'Adéquation
+Formation-Emploi (IAFE — FEAS, CRITIC, classement, priorisation), palmarès des
+établissements (top/bottom 10) et scénarios prospectifs, puis recommandations
+stratégiques et Policy Dashboard.
+"""
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from scipy.stats import spearmanr
+
+from utils.helpers import chart_insights, download_buttons, fmt_fr, png_download_button, setup_page, story_box
+from components.sidebar import render_sidebar
+from components.navbar import render_navbar
+from components.cards import recommendation_card, decision_card
+from components.metrics import kpi_row
+from components.footer import render_footer
+from config import REGIONS, REGION_COLORS, PALETTE, IAFE_WEIGHTS
+from utils.preprocessing import build_indicateurs_sup, build_budget_wide
+from utils.indicators import (
+    compute_feas, compute_complementary_scores, compute_iafe, compute_iafe_etablissement,
+    critic_weights, compute_impact_urgence, compute_scenarios, compute_region_features,
+    compute_cover_df, compute_saturation_risk,
+)
+from utils.charts import radar_chart, gauge_chart
+from utils.map_utils import build_map_priorities, build_map_recommandations
+from streamlit_folium import st_folium
+
+setup_page("Analyses & Recommandations", "🧮")
+df_filtered, filters = render_sidebar(show_filters=True, current="4_Analyses_Recommandations")
+render_navbar("Analyses & Recommandations", "Graphes · IAFE · Palmarès · Scénarios · Policy", "🧮")
+
+tabs = st.tabs(["Théorie des graphes", "Indice IAFE", "Palmarès & Scénarios", "Recommandations", "Policy Dashboard"])
+
+# ------------------------------------------------------------------
+# Théorie des graphes
+# ------------------------------------------------------------------
+with tabs[0]:
+    st.info("Valeur ajoutée distinctive de ce tableau de bord : au-delà des statistiques descriptives, la "
+            "théorie des graphes révèle la structure relationnelle du système éducatif togolais.")
+
+    with st.expander("📖 Glossaire — définitions des termes clés de théorie des graphes"):
+        st.caption("Notions mobilisées dans cet onglet pour analyser la structure relationnelle du système "
+                   "éducatif (nœuds = régions, préfectures, établissements... ; arêtes = relations entre eux).")
+        glossaire_graphes = pd.DataFrame([
+            ("Nœud (vertex)", "Élément de base d'un graphe : ici une région, une préfecture, un établissement, "
+             "une catégorie de formation ou un secteur d'activité."),
+            ("Arête (edge)", "Lien entre deux nœuds, par exemple la relation « tel établissement se trouve dans "
+             "telle préfecture » ou « telle région propose telle catégorie de formation »."),
+            ("Graphe biparti", "Graphe dont les nœuds se répartissent en deux groupes distincts (ex. Régions "
+             "d'un côté, Catégories de formation de l'autre), les arêtes ne reliant que des nœuds de groupes différents."),
+            ("Poids d'une arête", "Valeur numérique associée à un lien (ex. nombre d'établissements) qui en "
+             "indique l'intensité ou l'importance relative."),
+            ("Centralité de degré", "Mesure le nombre de connexions directes d'un nœud : une région reliée à "
+             "beaucoup de catégories de formation a une forte centralité de degré."),
+            ("Centralité d'intermédiarité (betweenness)", "Mesure à quel point un nœud sert de « pont » sur les "
+             "chemins les plus courts entre les autres nœuds du graphe."),
+            ("Centralité de proximité (closeness)", "Mesure la rapidité avec laquelle un nœud peut atteindre "
+             "tous les autres nœuds du graphe (plus la distance moyenne est faible, plus la centralité est élevée)."),
+            ("Centralité de vecteur propre (eigenvector)", "Mesure l'importance d'un nœud en tenant compte de "
+             "l'importance de ses voisins : être connecté à des nœuds eux-mêmes influents augmente ce score."),
+            ("PageRank", "Algorithme (popularisé par Google) qui attribue un score d'importance à chaque nœud "
+             "selon la quantité et la qualité des liens qui pointent vers lui."),
+            ("Communauté / Algorithme de Louvain", "Regroupement de nœuds plus densément connectés entre eux "
+             "qu'avec le reste du graphe ; l'algorithme de Louvain détecte automatiquement ces sous-groupes."),
+            ("Graphe hiérarchique", "Graphe organisé par niveaux (ex. Togo → Région → Préfecture → Établissement), "
+             "où chaque niveau est rattaché au niveau supérieur."),
+        ], columns=["Terme", "Définition / signification"])
+        st.dataframe(glossaire_graphes, width='stretch', hide_index=True)
+
+    st.markdown("#### Carte nationale des priorités d'investissement")
+    impact_urgence = compute_impact_urgence(df_filtered)
+    m2 = build_map_priorities(df_filtered, impact_urgence)
+    st_folium(m2, width='stretch', height=480, key="map_priorities")
+
+# ------------------------------------------------------------------
+# Indice IAFE
+# ------------------------------------------------------------------
+with tabs[1]:
+    feas = compute_feas(df_filtered)
+    feas_sorted = feas.sort_values("FEAS", ascending=False)
+    st.markdown("#### Formation-Employment Alignment Score (FEAS) — 0 à 100")
+    fig = px.bar(feas_sorted.reset_index(), x="region", y="FEAS", color="FEAS", color_continuous_scale="RdYlGn",
+                 range_color=[0, 100], text=feas_sorted["FEAS"].round(1), title="FEAS par région — 0 à 100")
+    fig.update_traces(textposition="outside")
+    fig.update_layout(height=380, margin=dict(t=60, b=10), coloraxis_showscale=False)
+    st.plotly_chart(fig, width='stretch')
+
+    with st.expander("📖 Glossaire — définitions des termes clés de cet onglet"):
+        glossaire_iafe = pd.DataFrame([
+            ("FEAS (Formation-Employment Alignment Score)", "Score composite (0 à 100) mesurant l'alignement de "
+             "l'offre de formation d'une région avec les besoins du marché de l'emploi, à partir de 7 critères "
+             "pondérés (couverture, diversité, dynamisme, volume, encadrement, orientation scientifique, exécution budgétaire)."),
+            ("IAFE (Indice d'Adéquation Formation-Emploi)", "Indice de référence du tableau de bord (0 à 100), "
+             "combinant 4 piliers pondérés — Offre de formation (40%), Budget par étudiant (25%), Insertion "
+             "professionnelle (20%) et Chômage des diplômés inversé (15%) — pour situer chaque région ou établissement."),
+            ("Méthode CRITIC", "Méthode statistique (Diakoulaki, Mavrotas & Papayannakis, 1995) qui calcule des "
+             "pondérations objectives à partir de la variabilité et de l'indépendance de chaque critère, utilisée "
+             "ici pour tester la robustesse des poids « experts » de l'IAFE."),
+            ("Corrélation de rang de Spearman (ρ)", "Coefficient (entre -1 et 1) qui mesure à quel point deux "
+             "classements (ex. IAFE experts vs IAFE CRITIC) ordonnent les régions de la même façon ; plus ρ est "
+             "proche de 1, plus l'accord entre les deux classements est fort."),
+            ("Matrice Impact × Urgence", "Outil de priorisation qui croise l'ampleur du déficit d'une région "
+             "(Impact) avec la nécessité d'agir rapidement (Urgence) pour classer les régions en Priorité 1/2/3."),
+            ("Opportunity Index", "Score (0 à 100) qui identifie les régions où une forte population est combinée "
+             "à une faible couverture territoriale en établissements — donc à fort potentiel d'investissement."),
+            ("Territorial Equity Score", "Score unique (0 à 100), calculé au niveau du système entier, qui mesure "
+             "l'équité de la répartition des établissements entre régions (100 = répartition parfaitement égale)."),
+            ("Employment Potential Score", "Score (0 à 100, ⚠️ proxy) combinant la diversité des filières/secteurs "
+             "d'une région et le dynamisme des créations récentes d'établissements, comme indicateur indirect de "
+             "potentiel d'insertion professionnelle."),
+            ("Indice de saturation proxy", "Score (0 à 100, ⚠️ proxy, non basé sur une mesure réelle du chômage) "
+             "combinant le poids d'une catégorie de formation dans l'offre totale et la part de ses créations "
+             "récentes, pour repérer les filières potentiellement sur-représentées."),
+        ], columns=["Terme", "Définition / signification"])
+        st.dataframe(glossaire_iafe, width='stretch', hide_index=True)
+
+    st.markdown("#### Formule de l'IAFE, indice de référence")
+    st.latex(r"""\text{IAFE} = 40\%\times\text{Offre} + 25\%\times\text{Budget/étudiant} + 20\%\times\text{Insertion} + 15\%\times\text{Chômage (inversé)}""")
+    iafe_data = compute_iafe(df_filtered)
+    iafe = iafe_data["iafe"]
+    iafe_sorted = iafe.sort_values("IAFE", ascending=False)
+    st.dataframe(iafe_sorted.style.background_gradient(subset=["IAFE"], cmap="RdYlGn").format(precision=1), width='stretch')
+    st.caption(f"Budget/étudiant {iafe_data['budget_year']} = {fmt_fr(iafe_data['budget_val'])} FCFA → score "
+               f"{iafe_data['budget_score']:.1f}/100. Chômage {iafe_data['chomage_year']} = {iafe_data['chomage_val']:.1f}% "
+               f"→ score {iafe_data['chomage_score']:.1f}/100.")
+
+    fig = go.Figure()
+    for col in IAFE_WEIGHTS:
+        fig.add_trace(go.Bar(x=iafe_sorted.index, y=iafe_sorted[col] * IAFE_WEIGHTS[col], name=col))
+    fig.update_layout(barmode="stack", title="IAFE par région — décomposition par pilier", yaxis_title="Score IAFE (0-100)",
+                       height=440, margin=dict(t=60, b=10), legend=dict(orientation="h", y=-0.15))
+    st.plotly_chart(fig, width='stretch')
+    png_download_button(fig, "iafe_piliers", "iafe_piliers")
+    story_box("La Maritime concentre l'essentiel de l'offre nationale et obtient le meilleur score d'Offre — "
+              "mais affiche le score d'Insertion (proxy) le plus faible du pays. Le Togo n'a donc pas seulement "
+              "un problème de <b>volume</b> d'offre, mais aussi de <b>composition</b> de cette offre.", "warning")
+
+    st.plotly_chart(gauge_chart(iafe_data["iafe_national"], "IAFE national (pondéré par la population régionale)"), width='stretch')
+
+    with st.expander("📐 Justification statistique des poids (méthode CRITIC) et test de robustesse"):
+        st.caption("CRITIC (Diakoulaki, Mavrotas & Papayannakis, 1995) pondère chaque critère selon sa "
+                   "variabilité et son originalité par rapport aux autres critères.")
+        w_critic = critic_weights(iafe[list(IAFE_WEIGHTS)])
+        w_expert = pd.Series(IAFE_WEIGHTS)
+        w_equal = pd.Series(0.25, index=list(IAFE_WEIGHTS))
+        comparaison_poids = pd.DataFrame({"Experts (cahier des charges)": w_expert, "CRITIC (statistique)": w_critic, "Égalitaire (référence)": w_equal})
+        st.dataframe(comparaison_poids.style.format("{:.1%}").background_gradient(cmap="Blues", axis=1), width='stretch')
+        iafe_critic = (iafe[list(IAFE_WEIGHTS)] * w_critic).sum(axis=1).round(1)
+        rho, _ = spearmanr(iafe["IAFE"].rank(ascending=False), iafe_critic.rank(ascending=False))
+        st.caption(f"Corrélation de rang (Spearman) experts vs CRITIC : {rho:.2f} — accord {'fort' if rho > 0.7 else 'faible à modéré'}.")
+        st.info(">>> Décision retenue : les poids du cahier des charges (40/25/20/15) sont conservés comme IAFE "
+                "officiel — la tension avec CRITIC est un résultat à porter à la connaissance des décideurs, pas un bug.")
+
+    st.markdown("#### Classement national — régions et établissements")
+    classement_regions = iafe[["IAFE"]].copy()
+    classement_regions["Rang IAFE"] = classement_regions["IAFE"].rank(ascending=False).astype(int)
+    classement_regions["FEAS"] = feas["FEAS"]
+    classement_regions = classement_regions.sort_values("IAFE", ascending=False)
+    fig = go.Figure(go.Bar(y=classement_regions.index, x=classement_regions["IAFE"], orientation="h",
+                            marker=dict(color=classement_regions["IAFE"], colorscale="RdYlGn", cmin=0, cmax=100),
+                            text=[f"#{r}  {v:.1f}" for r, v in zip(classement_regions["Rang IAFE"], classement_regions["IAFE"])],
+                            textposition="outside"))
+    fig.update_layout(title="Classement national des régions — IAFE", xaxis_title="Score IAFE (0-100)",
+                       xaxis_range=[0, 115], height=380, margin=dict(t=60, b=10), yaxis=dict(autorange="reversed"))
+    st.plotly_chart(fig, width='stretch')
+
+    with st.expander("🎯 Matrice de priorisation Impact × Urgence"):
+        impact_urgence = compute_impact_urgence(df_filtered)
+        med_impact, med_urgence = impact_urgence.attrs["med_impact"], impact_urgence.attrs["med_urgence"]
+        fig = go.Figure()
+        fig.add_shape(type="rect", x0=med_impact, x1=105, y0=med_urgence, y1=105, fillcolor="#D64545", opacity=0.07, line_width=0)
+        fig.add_shape(type="rect", x0=-5, x1=med_impact, y0=-5, y1=med_urgence, fillcolor="#0B6E4F", opacity=0.07, line_width=0)
+        fig.add_vline(x=med_impact, line_dash="dot", line_color="gray")
+        fig.add_hline(y=med_urgence, line_dash="dot", line_color="gray")
+        fig.add_trace(go.Scatter(x=impact_urgence["Impact"], y=impact_urgence["Urgence"], mode="markers+text",
+                                  text=impact_urgence.index, textposition="top center",
+                                  marker=dict(size=impact_urgence["Population_2022"] / 25000, color=impact_urgence["Couleur"],
+                                              line=dict(width=1.5, color="white"), sizemin=18)))
+        fig.update_layout(title="Matrice Impact × Urgence (taille = population 2022)", xaxis_title="Impact",
+                           yaxis_title="Urgence", xaxis_range=[-5, 105], yaxis_range=[-5, 105], height=500, margin=dict(t=60, b=10))
+        st.plotly_chart(fig, width='stretch')
+        download_buttons(impact_urgence.drop(columns="Couleur"), "matrice_impact_urgence", "iu")
+
+# ------------------------------------------------------------------
+# Palmarès des établissements & Scénarios prospectifs
+# ------------------------------------------------------------------
+with tabs[2]:
+    etab_iafe = compute_iafe_etablissement(df_filtered)
+    cols_show = ["etab_nom", "region_nom_bdd", "etablissement_categorie", "IAFE_etablissement"]
+    rename_show = {"etab_nom": "Établissement", "region_nom_bdd": "Région", "etablissement_categorie": "Catégorie", "IAFE_etablissement": "IAFE"}
+    top10 = etab_iafe.dropna(subset=["IAFE_etablissement"]).sort_values("IAFE_etablissement", ascending=False).head(10)[cols_show].rename(columns=rename_show)
+    bottom10 = etab_iafe.dropna(subset=["IAFE_etablissement"]).sort_values("IAFE_etablissement", ascending=True).head(10)[cols_show].rename(columns=rename_show)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**🏆 TOP 10 établissements**")
+        st.dataframe(top10.style.background_gradient(subset=["IAFE"], cmap="RdYlGn"), width='stretch', hide_index=True)
+    with c2:
+        st.markdown("**🔻 BOTTOM 10 établissements**")
+        st.dataframe(bottom10.style.background_gradient(subset=["IAFE"], cmap="RdYlGn"), width='stretch', hide_index=True)
+
+    st.markdown("#### 🔮 Scénarios prospectifs")
+    st.caption("Simulation transparente de la formule IAFE : que se passerait-il si l'on agissait sur tel ou tel levier ?")
+    sc = compute_scenarios()
+    st.dataframe(
+        sc["scenarios_df"].style.background_gradient(subset=["Δ IAFE national"], cmap="RdYlGn", vmin=-10, vmax=10)
+        .format({"IAFE national": "{:.1f}", "Δ IAFE national": "{:+.1f}"}, na_rep="n/a"),
+        width='stretch', hide_index=True,
+    )
+    story_box(f"Référence : IAFE national de base = {sc['iafe_base_nat']:.1f}/100. Il faudrait "
+              f"<b>+{sc['nb_centres_necessaires']} centres</b> pour que <b>{sc['region_cible']}</b> quitte la "
+              "dernière place en couverture/habitant.", "info")
+
+# ------------------------------------------------------------------
+# Recommandations stratégiques
+# ------------------------------------------------------------------
+with tabs[3]:
+    st.caption("Recommandations produites par une fonction de règles appliquée aux résultats calculés à partir "
+               "des filtres actifs (Région, Année de création) : si les données ou les filtres changent, les "
+               "recommandations changent avec eux.")
+    ind_wide = build_indicateurs_sup()
+    cover_df = compute_cover_df(df_filtered)
+    risk = compute_saturation_risk(df_filtered)
+    scores_df, equity = compute_complementary_scores(df_filtered)
+    impact_urgence_reco = compute_impact_urgence(df_filtered)
+
+    region_faible = cover_df.sort_values("etab_pour_100k_hab").iloc[0]
+    region_forte = cover_df.sort_values("etab_pour_100k_hab", ascending=False).iloc[0]
+    opportunity_index = scores_df["Opportunity Index"]
+
+    recommendations = [
+        f"🗺️ **Rééquilibrer l'offre territoriale** : la région **{region_faible['region']}** affiche la "
+        f"couverture la plus faible ({region_faible['etab_pour_100k_hab']:.1f} établissements/100k hab. contre "
+        f"{region_forte['etab_pour_100k_hab']:.1f} pour {region_forte['region']}). Prioriser l'ouverture de "
+        f"nouveaux centres, en cohérence avec son Opportunity Index ({opportunity_index[region_faible['region']]:.0f}/100).",
+
+        f"⚠️ **Vérifier le risque de saturation** de la catégorie **{risk.index[0]}** (indice proxy le plus "
+        f"élevé, {risk.iloc[0]['indice_saturation_proxy']:.0f}/100). La catégorie **{risk.index[-1]}** apparaît "
+        "sous-représentée et pourrait justifier un soutien ciblé.",
+
+        f"🔬 **Renforcer les filières scientifiques et technologiques**, qui ne représentent que "
+        f"{ind_wide['pct_filieres_scientifiques'].dropna().iloc[-1]:.1f}% des effectifs du supérieur, avec un "
+        f"accent sur la féminisation ({ind_wide['pct_filles_filieres_sci'].dropna().iloc[-1]:.1f}% des inscrits).",
+
+        f"💰 **Cibler l'investissement** sur la région **{feas_sorted.index[-1]}**, qui affiche le FEAS le "
+        f"plus bas ({feas_sorted.iloc[-1]['FEAS']:.0f}/100).",
+
+        "📋 **Combler le déficit de données** : une nomenclature de filières/spécialités systématiquement "
+        "renseignée, une exécution budgétaire régionalisée et une enquête de traçabilité des diplômés sont "
+        "nécessaires pour dépasser le stade de l'estimation indicative.",
+    ]
+    for i, r in enumerate(recommendations, 1):
+        recommendation_card(i, r)
+
+    st.markdown("#### 🗺️ Zones ciblées par les recommandations — carte du Togo")
+    st.caption("Chaque cercle correspond à une région (couleur = niveau de priorité d'investissement, taille = "
+               "population régionale). Les régions marquées ⭐ sont celles explicitement visées par une "
+               "recommandation ci-dessus.")
+    region_feas_faible = feas_sorted.index[-1]
+    highlight_zones = {region_faible["region"]: "Couverture territoriale la plus faible — priorité d'ouverture"}
+    if region_feas_faible != region_faible["region"]:
+        highlight_zones[region_feas_faible] = "FEAS le plus bas — cible d'investissement"
+    else:
+        highlight_zones[region_feas_faible] += " / FEAS le plus bas — cible d'investissement"
+
+    m_reco = build_map_recommandations(df_filtered, impact_urgence_reco, cover_df, highlight=highlight_zones)
+    st_folium(m_reco, width='stretch', height=480, key="map_recommandations")
+
+# ------------------------------------------------------------------
+# Policy Dashboard
+# ------------------------------------------------------------------
+with tabs[4]:
+    df_etab = df_filtered
+    impact_urgence = compute_impact_urgence(df_filtered)
+    iafe_data = compute_iafe(df_filtered)
+    risk = compute_saturation_risk(df_filtered)
+    scores_df, equity = compute_complementary_scores(df_filtered)
+
+    region_p1_top = (impact_urgence[impact_urgence["Priorité"] == "Priorité 1"]["Impact"].idxmax()
+                      if (impact_urgence["Priorité"] == "Priorité 1").any() else impact_urgence["Impact"].idxmax())
+    nb_p1 = int((impact_urgence["Priorité"] == "Priorité 1").sum())
+
+    kpi_row([
+        ("IAFE national", f"{iafe_data['iafe_national']:.1f}/100", "🧮", "#0B6E4F"),
+        ("Région n°1 en priorité", region_p1_top, "📍", "#D64545"),
+        ("Régions en Priorité 1", f"{nb_p1} / 5", "🚨", "#D64545" if nb_p1 else "#0B6E4F"),
+        ("Chômage diplômés (dernier)", f"{iafe_data['chomage_val']:.1f}%", "📉", "#17A2B8"),
+        ("Budget / étudiant (dernier)", f"{fmt_fr(iafe_data['budget_val'])} FCFA", "💰", "#F2994A"),
+    ])
+    st.write("")
+
+    st.markdown("#### Décisions prioritaires — calculées automatiquement à partir des données")
+    infra_gap_sport = df_etab["terrain_sport"].isna().mean() * 100
+    infra_gap_toilette = df_etab["toilette_type"].isna().mean() * 100
+    regions_p1 = impact_urgence[impact_urgence["Priorité"] == "Priorité 1"].sort_values("Impact", ascending=False)
+    from utils.indicators import compute_offre_demande_insertion
+    insertion_score = compute_offre_demande_insertion(df_filtered)["insertion_score"]
+    regions_insertion_faible = insertion_score[insertion_score < insertion_score.median()].sort_values()
+    categorie_risque, categorie_porteuse = risk.index[0], risk.index[-1]
+    sc = compute_scenarios()
+
+    if len(regions_p1):
+        decision_card("🏗️ Construire de nouveaux centres techniques", f"Régions Priorité 1 : {', '.join(regions_p1.index)}",
+                      f"Déficit d'offre moyen de {regions_p1['deficit_offre'].mean():.0f}/100 ; seuil de rattrapage "
+                      f"estimé à +{sc['nb_centres_necessaires']} centres pour {sc['region_cible']} seule.", "#D64545")
+    if iafe_data["budget_score"] < 50:
+        decision_card("💰 Augmenter le budget par étudiant", "Niveau national",
+                      f"Dépense/étudiant {iafe_data['budget_year']} = {fmt_fr(iafe_data['budget_val'])} FCFA, "
+                      f"positionnée à {iafe_data['budget_score']:.0f}/100 de sa propre plage historique observée.", "#F2994A")
+    decision_card("🎓 Développer certaines filières", f"Renforcer « {categorie_porteuse} » ; encadrer « {categorie_risque} »",
+                  f"Indice de saturation proxy : {risk.loc[categorie_porteuse, 'indice_saturation_proxy']:.1f}/100 vs "
+                  f"{risk.loc[categorie_risque, 'indice_saturation_proxy']:.1f}/100.", "#17A2B8")
+    if len(regions_insertion_faible):
+        decision_card("🤝 Renforcer les partenariats entreprises-universités", ", ".join(regions_insertion_faible.index),
+                      f"Score d'insertion (proxy) le plus faible pour {regions_insertion_faible.index[0]} "
+                      f"({regions_insertion_faible.iloc[0]:.0f}/100).", "#0B6E4F")
+    decision_card("🏫 Améliorer les infrastructures", "Ensemble du parc de formation technique",
+                  f"{infra_gap_sport:.0f}% des établissements sans terrain de sport recensé, {infra_gap_toilette:.0f}% "
+                  "sans type de sanitaire renseigné.", "#8C5E58")
+    decision_card("🎯 Créer des bourses ciblées", f"{scores_df['Opportunity Index'].idxmax()}",
+                  f"Opportunity Index le plus élevé du pays ({scores_df['Opportunity Index'].max():.0f}/100).", "#F2994A")
+
+    st.markdown("#### En une phrase")
+    synthese = (
+        f"Le Togo affiche un IAFE national de **{iafe_data['iafe_national']:.1f}/100** : **{region_p1_top}** "
+        f"concentre le déficit le plus critique (Priorité 1, {nb_p1} région(s) sur 5), la Maritime illustre un "
+        "problème de **composition** de l'offre plutôt que de volume, et le chômage des diplômés "
+        f"({iafe_data['chomage_val']:.1f}% en {iafe_data['chomage_year']}) reste proche de son meilleur niveau "
+        "observé — une fenêtre favorable pour agir."
+    )
+    st.markdown(
+        f'<div style="padding:18px 22px;background:linear-gradient(135deg,#0B6E4F,#17A2B8);color:white;'
+        f'border-radius:10px;font-size:15.5px;line-height:1.6;">{synthese}</div>',
+        unsafe_allow_html=True,
+    )
+
+render_footer()
